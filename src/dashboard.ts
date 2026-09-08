@@ -54,57 +54,47 @@ export function renderUsageDashboard(): string {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 12px;
-    padding: 12px 24px;
+    gap: 10px;
+    padding: 10px 18px;
     background: var(--panel);
     border-bottom: 1px solid var(--line);
     box-sizing: border-box;
+    flex-wrap: nowrap;
   }
   header h1 {
-    font-size: 16px;
+    font-size: 15px;
     font-weight: 600;
     margin: 0;
     white-space: nowrap;
     flex-shrink: 0;
-    line-height: 32px;
-  }
-  /* 弹窗嵌入模式：隐藏内层多余的 h1 标题，空间全部留给筛选栏，杜绝双标题与折行 */
-  body.is-embedded header h1 {
-    display: none;
-  }
-  body.is-embedded header {
-    padding: 10px 20px;
+    line-height: 30px;
   }
   .controls {
     display: flex;
-    gap: 10px;
+    gap: 8px;
     align-items: center;
     margin-left: auto;
     flex-wrap: nowrap;
-  }
-  body.is-embedded .controls {
-    margin-left: 0;
-    width: 100%;
-    justify-content: flex-end;
+    flex-shrink: 1;
   }
   .controls label {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    font-size: 13px;
+    gap: 5px;
+    font-size: 12px;
     color: var(--muted);
     white-space: nowrap;
-    line-height: 32px;
+    line-height: 30px;
   }
   select {
     border: 1px solid var(--line);
     background: var(--panel);
     color: var(--text);
     border-radius: 6px;
-    height: 32px;
-    padding: 0 8px;
+    height: 30px;
+    padding: 0 6px;
     font: inherit;
-    font-size: 13px;
+    font-size: 12px;
     outline: none;
     box-sizing: border-box;
     cursor: pointer;
@@ -113,7 +103,7 @@ export function renderUsageDashboard(): string {
     border-color: var(--accent);
   }
   #model {
-    max-width: 140px;
+    max-width: 120px;
     text-overflow: ellipsis;
   }
   button {
@@ -127,7 +117,7 @@ export function renderUsageDashboard(): string {
   @media (max-width: 680px) {
     header {
       flex-wrap: wrap;
-      padding: 10px 16px;
+      padding: 10px 14px;
     }
     .controls {
       flex-wrap: wrap;
@@ -242,10 +232,10 @@ export function renderUsageDashboard(): string {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 6px;
-    height: 32px;
-    padding: 0 12px;
-    font-size: 13px;
+    gap: 5px;
+    height: 30px;
+    padding: 0 9px;
+    font-size: 12px;
     font-weight: 500;
     border: 1px solid var(--line);
     background: var(--panel);
@@ -813,7 +803,11 @@ export function renderUsageDashboard(): string {
 <script>
 (function () {
   'use strict'
-  if (window.self !== window.top) {
+  try {
+    if (window.self !== window.top) {
+      document.body.classList.add('is-embedded')
+    }
+  } catch (_) {
     document.body.classList.add('is-embedded')
   }
   function $(id) { return document.getElementById(id) }

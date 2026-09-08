@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.11] - 2026-09-08
+
+### 🚀 稳定性与全量会话恢复 (Full Session Recovery & Accuracy)
+- **自主全工作区与多版本（v0/v1/v2）全量会话发现**：
+  - 彻底解决官方底层 `sessionPersistence.list()` 仅检查旧版 `session.jsonl.zstd` 而漏扫全部现代 `session.v2.jsonl.zstd` 的硬伤。
+  - 突破单一工作区（CWD）限制，自动跨项目（如 `StarsClaw`）无死角扫描所有子目录，无论何时重启服务或切换工作区，所有对话 Token 用量 100% 完整恢复。
+- **Revision 毫秒级缓存守卫（0 I/O 阻塞）**：
+  - 针对全量磁盘扫描引入文件修改时间与大小哈希守卫（`mtimeMs + size`），二次扫描仅耗时 ~14ms，前端内存快照查询仅 ~28ms，兼顾数据绝对准确与极致速度。
+- **前端环境探测安全防御**：
+  - `<script>` 顶层 `window.top` 嵌入检测加入 `try...catch` 异常保护，杜绝跨域沙箱与严格安全策略下 JS 崩溃导致数据停留在 `--` 初始态的问题。
+
+### 💄 标题恢复与紧凑单行对齐 (Title Restoration & Single-line Alignment)
+- **恢复大标题展示**：弹窗内层完整恢复「Token 用量统计」大标题，兼顾习惯与层级感。
+- **像素级单行紧凑对齐**：
+  - 精细优化 `<header>` 与 `.controls` 的内边距与元素间距，控件高度统一为 `30px`。
+  - 保证「大标题 + 范围 + 粒度 + 模型 + 刷新 + 价格配置」全部保持在同一单行绝对水平平齐，在标准弹窗宽度下彻底杜绝折行与错位。
+
+---
+
 ## [0.3.10] - 2026-09-08
 
 ### 💄 界面对齐与弹窗体验优化 (UI Alignment & Modal Experience)

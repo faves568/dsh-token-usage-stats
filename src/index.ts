@@ -14,7 +14,7 @@ import type { Session, SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-session-title'
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { zstdDecompress } from 'node:zlib'
 import os from 'node:os'
 import path from 'node:path'
@@ -682,6 +682,39 @@ export class TokenUsageStats extends Service {
   }
 
   /**
+   * Directly read and parse session events from a specific log file,
+   * handling concatenated Zstandard frames and plain JSONL.
+   */
+  private async _readEventsFromFile(targetFile: string): Promise<readonly SessionEvent[]> {
+    const isZstd = targetFile.endsWith('.zstd')
+    let rawText = ''
+    try {
+      if (isZstd) {
+        const buf = readFileSync(targetFile)
+        rawText = await decompressConcatenatedZstd(buf)
+      } else {
+        rawText = readFileSync(targetFile, 'utf8')
+      }
+    } catch {
+      return []
+    }
+    if (!rawText) return []
+    const lines = rawText.trim().split('\n')
+    const events: SessionEvent[] = []
+    for (let i = 1; i < lines.length; i++) {
+      const line = lines[i]!.trim()
+      if (!line) continue
+      try {
+        const ev = JSON.parse(line) as SessionEvent
+        if (ev && typeof ev === 'object' && typeof ev.type === 'string') {
+          events.push(ev)
+        }
+      } catch {}
+    }
+    return events
+  }
+
+  /**
    * Directly read and parse session events from the disk file, bypassing
    * format-version migrations and strict assertion rejections.
    */
@@ -707,35 +740,61 @@ export class TokenUsageStats extends Service {
     if (logFiles.length === 0) return []
     // Latest format version first (v2 -> v1 -> v0)
     logFiles.sort().reverse()
-    const targetFile = path.join(dir, logFiles[0]!)
-    const isZstd = targetFile.endsWith('.zstd')
+    return await this._readEventsFromFile(path.join(dir, logFiles[0]!))
+  }
 
-    let rawText = ''
+  /**
+   * Discover all stored sessions across all workspace project directories and all
+   * format generations (session.jsonl.zstd, session.v1.jsonl, session.v2.jsonl.zstd, etc.).
+   */
+  private _discoverAllPersistedSessions(): Array<{ id: SessionId; filePath: string; revision: string }> {
+    const root = (this.persistence as unknown as { root?: string })?.root
+      ?? path.join(os.homedir(), '.dsh', 'sessions')
+    if (!existsSync(root)) return []
+    const targets: Array<{ id: SessionId; filePath: string; revision: string }> = []
+    const seenIds = new Set<string>()
+
+    let projects: string[] = []
     try {
-      if (isZstd) {
-        const buf = readFileSync(targetFile)
-        rawText = await decompressConcatenatedZstd(buf)
-      } else {
-        rawText = readFileSync(targetFile, 'utf8')
-      }
+      projects = readdirSync(root)
     } catch {
       return []
     }
 
-    if (!rawText) return []
-    const lines = rawText.trim().split('\n')
-    const events: SessionEvent[] = []
-    for (let i = 1; i < lines.length; i++) {
-      const line = lines[i]!.trim()
-      if (!line) continue
+    for (const p of projects) {
+      const pPath = path.join(root, p)
       try {
-        const ev = JSON.parse(line) as SessionEvent
-        if (ev && typeof ev === 'object' && typeof ev.type === 'string') {
-          events.push(ev)
-        }
-      } catch {}
+        if (!statSync(pPath).isDirectory()) continue
+      } catch {
+        continue
+      }
+      let sDirs: string[] = []
+      try {
+        sDirs = readdirSync(pPath)
+      } catch {
+        continue
+      }
+      for (const s of sDirs) {
+        if (seenIds.has(s)) continue
+        const sPath = path.join(pPath, s)
+        try {
+          if (!statSync(sPath).isDirectory()) continue
+          const files = readdirSync(sPath).filter(f => f.startsWith('session') && (f.endsWith('.zstd') || f.endsWith('.jsonl')))
+          if (files.length === 0) continue
+          files.sort().reverse()
+          const targetFile = path.join(sPath, files[0]!)
+          const st = statSync(targetFile)
+          const revision = `${Math.floor(st.mtimeMs)}-${st.size}`
+          seenIds.add(s)
+          targets.push({
+            id: s as SessionId,
+            filePath: targetFile,
+            revision,
+          })
+        } catch {}
+      }
     }
-    return events
+    return targets
   }
 
   /**
@@ -746,9 +805,25 @@ export class TokenUsageStats extends Service {
    */
   private async _rehydrate(sessionPersistence?: SessionPersistence): Promise<void> {
     const sp = sessionPersistence ?? this.persistence
-    if (!sp) return
-    this.persistence = sp
-    const anyPersistence = sp as unknown as {
+    if (sp) this.persistence = sp
+
+    // 1. 自主全项目扫描：发现所有工作区下的各版本（v0, v1, v2 等）会话
+    const discovered = this._discoverAllPersistedSessions()
+    const sessionQueue: Array<{
+      id: SessionId
+      filePath?: string | undefined
+      revision?: string | undefined
+      snapshot?: { header: { id: SessionId; cwd?: string } } | undefined
+    }> = []
+    const queuedIds = new Set<string>()
+
+    for (const d of discovered) {
+      queuedIds.add(d.id)
+      sessionQueue.push(d)
+    }
+
+    // 2. 兼容并拉取官方 persistence（如有其它独立存储）
+    const anyPersistence = this.persistence as unknown as {
       list?: () => Promise<readonly { header: { id: SessionId; cwd?: string } }[]>
       listSnapshots?: () => Promise<readonly { header: { id: SessionId; cwd?: string } }[]>
       open?: (id: SessionId, access: string) => Promise<{
@@ -756,28 +831,49 @@ export class TokenUsageStats extends Service {
         close: () => Promise<void>
       }>
       inspect?: (id: SessionId) => Promise<{ events: readonly SessionEvent[] }>
+    } | undefined
+
+    if (anyPersistence) {
+      const listFn = anyPersistence.list ?? anyPersistence.listSnapshots
+      if (typeof listFn === 'function') {
+        try {
+          const snapshots = await listFn.call(anyPersistence)
+          for (const sn of snapshots) {
+            if (!queuedIds.has(sn.header.id)) {
+              queuedIds.add(sn.header.id)
+              const rev = (sn as { revision?: unknown }).revision !== undefined
+                ? String((sn as { revision?: unknown }).revision)
+                : undefined
+              sessionQueue.push({
+                id: sn.header.id,
+                revision: rev,
+                snapshot: sn,
+              })
+            }
+          }
+        } catch {}
+      }
     }
 
-    const listFn = anyPersistence.list ?? anyPersistence.listSnapshots
-    if (typeof listFn !== 'function') return
-    const snapshots = await listFn.call(anyPersistence)
-    for (const snapshot of snapshots) {
-      const id = snapshot.header.id
-      const rev = (snapshot as { revision?: unknown }).revision !== undefined
-        ? String((snapshot as { revision?: unknown }).revision)
-        : undefined
+    for (const item of sessionQueue) {
+      const id = item.id
+      const rev = item.revision
       const lastRev = this.persistedRevisions.get(id)
       const lastSeq = this.persistedSeq.get(id) ?? 0
 
-      // If the revision matches and we already processed this session, skip opening the file completely
+      // Revision 守卫：文件修改时间与大小一致且已水合过，0 毫秒跳过，无 I/O
       if (rev !== undefined && lastRev !== undefined && lastRev === rev && lastSeq > 0) {
         continue
       }
 
+      // 让出事件循环微任务，杜绝大批量文件处理卡死主线程
+      await new Promise(resolve => setImmediate(resolve))
+
       let events: readonly SessionEvent[] = []
       let openedByOfficial = false
-      try {
-        if (typeof anyPersistence.open === 'function') {
+
+      if (anyPersistence && typeof anyPersistence.open === 'function') {
+        try {
           const handle = await anyPersistence.open(id, 'read')
           try {
             events = await handle.read()
@@ -785,29 +881,28 @@ export class TokenUsageStats extends Service {
           } finally {
             await handle.close()
           }
-        } else if (typeof anyPersistence.inspect === 'function') {
+        } catch {}
+      }
+
+      if (!openedByOfficial && anyPersistence && typeof anyPersistence.inspect === 'function') {
+        try {
           const inspection = await anyPersistence.inspect(id)
           events = inspection.events
           openedByOfficial = true
-        }
-      } catch {
-        // Official sessionPersistence.open failed; fall through to fallback read
+        } catch {}
       }
 
       if (!openedByOfficial || events.length === 0) {
-        const fallbackEvents = await this._fallbackReadSession(snapshot)
-        if (fallbackEvents.length > 0) {
-          events = fallbackEvents
+        if (item.filePath) {
+          events = await this._readEventsFromFile(item.filePath)
+        } else if (item.snapshot) {
+          events = await this._fallbackReadSession(item.snapshot)
         }
       }
 
-      // 无论何种方式，记录 revision 杜绝无休止的重复尝试
       if (rev !== undefined) {
         this.persistedRevisions.set(id, rev)
       }
-
-      // 让出事件循环微任务，杜绝大批量文件处理卡死主线程
-      await new Promise(resolve => setImmediate(resolve))
 
       if (events.length <= lastSeq) continue
 
