@@ -180,27 +180,6 @@ async function decompressConcatenatedZstd(buffer: Buffer): Promise<string> {
   return result
 }
 
-function projectKeySlug(cwd: string): string {
-  let readable = ''
-  let separatorRun = false
-  for (let i = 0; i < cwd.length; i++) {
-    const code = cwd.charCodeAt(i)
-    const ch = String.fromCharCode(code)
-    if (ch === '/' || ch === '\\' || ch === ':') {
-      if (!separatorRun) readable += '-'
-      separatorRun = true
-    } else if (ch !== '~' && /^[A-Za-z0-9._-]$/.test(ch)) {
-      readable += ch
-      separatorRun = false
-    } else {
-      readable += '~' + code.toString(16).toUpperCase().padStart(4, '0')
-      separatorRun = false
-    }
-  }
-  const slug = readable.replace(/^-+/, '') || 'root'
-  return `--${slug.slice(0, 251)}--`
-}
-
 const DEFAULT_PEAK_INTERVALS: readonly PeakInterval[] = [
   { start: '09:00', end: '12:00' },
   { start: '14:00', end: '18:00' },
@@ -419,6 +398,7 @@ export class TokenUsageStats extends Service {
   private config: ResolvedConfig
   private readonly usageByStep = new Map<string, number>()
   private readonly usageRecords: UsageRecord[] = []
+  private readonly requestByStep = new Map<string, number>()
   private readonly requestRecords: RequestRecord[] = []
   private readonly states = new WeakMap<Session, SessionState>()
   private readonly persistedSeq = new Map<SessionId, number>()
@@ -430,6 +410,8 @@ export class TokenUsageStats extends Service {
   private persistence: SessionPersistence | undefined
   private lastRehydrateTime = 0
   private rehydrating: Promise<void> | undefined
+  private firstRehydratePromise: Promise<void> | undefined
+  private isFirstRehydrated = false
 
   /** Trigger non-blocking background rehydration throttled to at most once per 4 seconds. */
   private async _scheduleRehydrate(): Promise<void> {
@@ -461,11 +443,20 @@ export class TokenUsageStats extends Service {
     this.config = validateConfig(merged)
 
     for (const session of ctx.sessions.list()) this._sync(session)
+
+    // Immediately trigger initial rehydration so analytics are populated
+    this.firstRehydratePromise = this._rehydrate().then(
+      () => {
+        this.isFirstRehydrated = true
+      },
+      (error: unknown) => {
+        this.isFirstRehydrated = true
+        this.ctx.logger.warn(`token usage stats: initial rehydration failed: ${String(error)}`)
+      },
+    )
+
     ctx.inject(['sessionPersistence'], (persistenceCtx) => {
       this.persistence = persistenceCtx.sessionPersistence
-      void this._rehydrate(persistenceCtx.sessionPersistence).catch((error: unknown) => {
-        this.ctx.logger.warn(`token usage stats: rehydration failed: ${String(error)}`)
-      })
     })
     // Serve the dashboard from this plugin when the webserver is present (the
     // web profile); a headless profile simply never mounts the routes.
@@ -494,12 +485,17 @@ export class TokenUsageStats extends Service {
         const removeApi = webCtx.webServer.register({
           kind: 'exact',
           path: '/api/token-usage-stats',
-          handler: (req, res) => {
+          handler: async (req, res) => {
             if (req.method !== 'GET' && req.method !== 'HEAD') {
               res.writeHead(405)
               res.end()
               return
             }
+            // Ensure first rehydrate has completed before returning snapshot
+            if (!this.isFirstRehydrated && this.firstRehydratePromise) {
+              await this.firstRehydratePromise
+            }
+
             // Trigger background sync without blocking this response
             void this._scheduleRehydrate()
 
@@ -715,35 +711,6 @@ export class TokenUsageStats extends Service {
   }
 
   /**
-   * Directly read and parse session events from the disk file, bypassing
-   * format-version migrations and strict assertion rejections.
-   */
-  private async _fallbackReadSession(
-    snapshot: { header: { id: SessionId; cwd?: string } },
-  ): Promise<readonly SessionEvent[]> {
-    const root = (this.persistence as unknown as { root?: string })?.root
-      ?? path.join(os.homedir(), '.dsh', 'sessions')
-    const id = snapshot.header.id
-    const cwd = snapshot.header.cwd
-    const pKey = cwd ? projectKeySlug(cwd) : '_no-cwd'
-    const dir = path.join(root, pKey, id)
-    if (!existsSync(dir)) return []
-
-    let files: string[] = []
-    try {
-      files = readdirSync(dir)
-    } catch {
-      return []
-    }
-
-    const logFiles = files.filter(f => f.startsWith('session') && (f.endsWith('.zstd') || f.endsWith('.jsonl')))
-    if (logFiles.length === 0) return []
-    // Latest format version first (v2 -> v1 -> v0)
-    logFiles.sort().reverse()
-    return await this._readEventsFromFile(path.join(dir, logFiles[0]!))
-  }
-
-  /**
    * Discover all stored sessions across all workspace project directories and all
    * format generations (session.jsonl.zstd, session.v1.jsonl, session.v2.jsonl.zstd, etc.).
    */
@@ -807,55 +774,10 @@ export class TokenUsageStats extends Service {
     const sp = sessionPersistence ?? this.persistence
     if (sp) this.persistence = sp
 
-    // 1. 自主全项目扫描：发现所有工作区下的各版本（v0, v1, v2 等）会话
+    // 自主全项目跨版本扫描：发现所有工作区下的各版本（v0, v1, v2 等）会话文件
     const discovered = this._discoverAllPersistedSessions()
-    const sessionQueue: Array<{
-      id: SessionId
-      filePath?: string | undefined
-      revision?: string | undefined
-      snapshot?: { header: { id: SessionId; cwd?: string } } | undefined
-    }> = []
-    const queuedIds = new Set<string>()
 
-    for (const d of discovered) {
-      queuedIds.add(d.id)
-      sessionQueue.push(d)
-    }
-
-    // 2. 兼容并拉取官方 persistence（如有其它独立存储）
-    const anyPersistence = this.persistence as unknown as {
-      list?: () => Promise<readonly { header: { id: SessionId; cwd?: string } }[]>
-      listSnapshots?: () => Promise<readonly { header: { id: SessionId; cwd?: string } }[]>
-      open?: (id: SessionId, access: string) => Promise<{
-        read: () => Promise<readonly SessionEvent[]>
-        close: () => Promise<void>
-      }>
-      inspect?: (id: SessionId) => Promise<{ events: readonly SessionEvent[] }>
-    } | undefined
-
-    if (anyPersistence) {
-      const listFn = anyPersistence.list ?? anyPersistence.listSnapshots
-      if (typeof listFn === 'function') {
-        try {
-          const snapshots = await listFn.call(anyPersistence)
-          for (const sn of snapshots) {
-            if (!queuedIds.has(sn.header.id)) {
-              queuedIds.add(sn.header.id)
-              const rev = (sn as { revision?: unknown }).revision !== undefined
-                ? String((sn as { revision?: unknown }).revision)
-                : undefined
-              sessionQueue.push({
-                id: sn.header.id,
-                revision: rev,
-                snapshot: sn,
-              })
-            }
-          }
-        } catch {}
-      }
-    }
-
-    for (const item of sessionQueue) {
+    for (const item of discovered) {
       const id = item.id
       const rev = item.revision
       const lastRev = this.persistedRevisions.get(id)
@@ -869,36 +791,7 @@ export class TokenUsageStats extends Service {
       // 让出事件循环微任务，杜绝大批量文件处理卡死主线程
       await new Promise(resolve => setImmediate(resolve))
 
-      let events: readonly SessionEvent[] = []
-      let openedByOfficial = false
-
-      if (anyPersistence && typeof anyPersistence.open === 'function') {
-        try {
-          const handle = await anyPersistence.open(id, 'read')
-          try {
-            events = await handle.read()
-            openedByOfficial = true
-          } finally {
-            await handle.close()
-          }
-        } catch {}
-      }
-
-      if (!openedByOfficial && anyPersistence && typeof anyPersistence.inspect === 'function') {
-        try {
-          const inspection = await anyPersistence.inspect(id)
-          events = inspection.events
-          openedByOfficial = true
-        } catch {}
-      }
-
-      if (!openedByOfficial || events.length === 0) {
-        if (item.filePath) {
-          events = await this._readEventsFromFile(item.filePath)
-        } else if (item.snapshot) {
-          events = await this._fallbackReadSession(item.snapshot)
-        }
-      }
+      const events = await this._readEventsFromFile(item.filePath)
 
       if (rev !== undefined) {
         this.persistedRevisions.set(id, rev)
@@ -983,7 +876,7 @@ export class TokenUsageStats extends Service {
         // One API request per completed model call: `request/header` and
         // `request/context` are change-only snapshots, so the only per-request
         // signal in the log is the final assistant message.
-        this._recordRequest(session, event.time, state.provider ?? 'unknown', state.model ?? 'unknown')
+        this._recordRequest(session, state, event.time, event.data.turn, event.data.step)
         if (event.data.usage !== undefined) {
           this._recordUsage(
             session,
@@ -1031,9 +924,28 @@ export class TokenUsageStats extends Service {
     }
   }
 
-  /** Record one dispatched request for count bucketing. */
-  private _recordRequest(sessionId: SessionId, time: number, provider: string, model: string): void {
-    this.requestRecords.push({ sessionId, time, provider, model })
+  /** Record one dispatched request for count bucketing, replacing any earlier same-step record. */
+  private _recordRequest(
+    sessionId: SessionId,
+    state: SessionState,
+    time: number,
+    turn: number | undefined,
+    step: number | undefined,
+  ): void {
+    const key = `${sessionId}:${turn ?? '0'}:${step ?? '0'}`
+    const record: RequestRecord = {
+      sessionId,
+      time,
+      provider: state.provider ?? 'unknown',
+      model: state.model ?? 'unknown',
+    }
+    const existingIndex = this.requestByStep.get(key)
+    if (existingIndex !== undefined) {
+      this.requestRecords[existingIndex] = record
+    } else {
+      this.requestByStep.set(key, this.requestRecords.length)
+      this.requestRecords.push(record)
+    }
   }
 
   /**

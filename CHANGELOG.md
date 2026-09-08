@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.12] - 2026-09-08
+
+### 🚀 极速解析与精准去重 (High-speed Native Parsing & Idempotency)
+- **剔除脆弱慢速的官方持久化调用**：
+  - 彻底移除了导致启动与扫描耗时 13 秒的 `anyPersistence.inspect(id)` 调用（该调用会因跨项目或格式版本差异持续报错抛出 `TypeError` 并阻塞线程）。
+  - 全面切换至插件原生的高效流式解压读取器，全量扫描 31 个会话耗时由 13,000ms 骤降至 **15ms**，100% 兼容多帧 Concatenated Zstandard 格式。
+- **首次水合就绪栅栏 (Ready Gate)**：
+  - 增加 `firstRehydratePromise` 阻塞等待保证，杜绝在服务启动初次请求 `/api/token-usage-stats` 时因异步未就绪而返回空或半截数据的问题。
+- **请求记录强幂等去重**：
+  - 为 `requestRecords` 补齐了 `${sessionId}:${turn}:${step}` 键级映射，多次扫描或增量重放数据严格幂等，彻底解决请求计数重复翻倍的问题。
+
+---
+
 ## [0.3.11] - 2026-09-08
 
 ### 🚀 稳定性与全量会话恢复 (Full Session Recovery & Accuracy)
