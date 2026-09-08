@@ -53,23 +53,90 @@ export function renderUsageDashboard(): string {
     z-index: 1;
     display: flex;
     align-items: center;
-    gap: 16px;
-    padding: 14px 24px;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 24px;
     background: var(--panel);
     border-bottom: 1px solid var(--line);
-    flex-wrap: wrap;
+    box-sizing: border-box;
   }
-  header h1 { font-size: 18px; margin: 0; }
-  .controls { display: flex; gap: 10px; align-items: center; margin-left: auto; flex-wrap: wrap; }
-  select, button {
+  header h1 {
+    font-size: 16px;
+    font-weight: 600;
+    margin: 0;
+    white-space: nowrap;
+    flex-shrink: 0;
+    line-height: 32px;
+  }
+  /* 弹窗嵌入模式：隐藏内层多余的 h1 标题，空间全部留给筛选栏，杜绝双标题与折行 */
+  body.is-embedded header h1 {
+    display: none;
+  }
+  body.is-embedded header {
+    padding: 10px 20px;
+  }
+  .controls {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    margin-left: auto;
+    flex-wrap: nowrap;
+  }
+  body.is-embedded .controls {
+    margin-left: 0;
+    width: 100%;
+    justify-content: flex-end;
+  }
+  .controls label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: var(--muted);
+    white-space: nowrap;
+    line-height: 32px;
+  }
+  select {
     border: 1px solid var(--line);
     background: var(--panel);
     color: var(--text);
     border-radius: 6px;
-    padding: 6px 10px;
+    height: 32px;
+    padding: 0 8px;
     font: inherit;
+    font-size: 13px;
+    outline: none;
+    box-sizing: border-box;
+    cursor: pointer;
   }
-  button { cursor: pointer; }
+  select:focus {
+    border-color: var(--accent);
+  }
+  #model {
+    max-width: 140px;
+    text-overflow: ellipsis;
+  }
+  button {
+    border: 1px solid var(--line);
+    background: var(--panel);
+    color: var(--text);
+    border-radius: 6px;
+    font: inherit;
+    cursor: pointer;
+  }
+  @media (max-width: 680px) {
+    header {
+      flex-wrap: wrap;
+      padding: 10px 16px;
+    }
+    .controls {
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    #model {
+      max-width: 110px;
+    }
+  }
   main { padding: 20px 24px 32px; display: grid; gap: 16px; max-width: 1200px; margin: 0 auto; }
   .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
@@ -746,6 +813,9 @@ export function renderUsageDashboard(): string {
 <script>
 (function () {
   'use strict'
+  if (window.self !== window.top) {
+    document.body.classList.add('is-embedded')
+  }
   function $(id) { return document.getElementById(id) }
   function esc(value) {
     return String(value).replace(/[&<>"']/g, function (ch) {
