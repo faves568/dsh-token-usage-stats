@@ -27,7 +27,7 @@ DSH Web 插件：跨会话的 Token 用量、请求次数与可选成本统计�
 ## 安装
 
 ```sh
-dsh plugin --profile web add dsh-token-usage-stats@0.3.9
+dsh plugin --profile web add dsh-token-usage-stats@0.3.13
 ```
 
 插件的 `cordis.patch.yml` 会插入插件行；浏览器半区通过 `dsh.client` 清单自动加载。安装后重启宿主（或刷新 GUI）。
@@ -46,7 +46,7 @@ dsh plugin --profile web add dsh-token-usage-stats@latest
 
 ## 配置
 
-插入行支持 `config.currency`（成本显示货币）与 `config.pricing`（各模型每百万 token 的价格）。成本按**高峰/闲时两档**计价：高峰为北京时间 09:00-12:00、14:00-18:00，其余北京时段为闲时；**周末（北京时间周六/周日）全天按闲时**。用 `peak`/`offpeak` 两档的模型按使用时间取对应档位；只用四个平档键（`uncachedInputPerMillion` / `cacheReadPerMillion` / `cacheWritePerMillion` / `outputPerMillion`）的模型任意时段同价。默认行带 `currency: CNY`，以及 `deepseek-v4-flash` / `deepseek-v4-pro` / `deepseek-v4-flash-vision-exp` 的高峰/闲时定价。
+插入行支持 `config.currency`（成本显示货币）与 `config.pricing`（各模型每百万 token 的价格）。成本按**高峰/闲时两档**计价：高峰为北京时间 09:00-12:00、14:00-18:00，其余北京时段为闲时；**周末（北京时间周六/周日）全天按闲时**。用 `peak`/`offpeak` 两档的模型按使用时间取对应档位；只用四个平档键（`uncachedInputPerMillion` / `cacheReadPerMillion` / `cacheWritePerMillion` / `outputPerMillion`）的模型任意时段同价。默认行带 `currency: CNY`，以及 `deepseek-flash` 与 `deepseek-v4-pro` 的官方高峰/闲时定价（自动兼容 `deepseek-v4-flash*` 历史模型别名）。
 
 在 profile 自己的 `cordis.patch.yml` 中覆盖示例：
 
@@ -56,17 +56,17 @@ dsh plugin --profile web add dsh-token-usage-stats@latest
       config:
         currency: USD
         pricing:
-          deepseek-v4-flash:
+          deepseek-flash:
             peak:
-              uncachedInputPerMillion: 3.0
-              cacheReadPerMillion: 0.10
+              uncachedInputPerMillion: 2.0
+              cacheReadPerMillion: 0.04
               cacheWritePerMillion: 0
-              outputPerMillion: 9.0
+              outputPerMillion: 8.0
             offpeak:
-              uncachedInputPerMillion: 1.5
-              cacheReadPerMillion: 0.05
+              uncachedInputPerMillion: 1.0
+              cacheReadPerMillion: 0.02
               cacheWritePerMillion: 0
-              outputPerMillion: 4.5
+              outputPerMillion: 4.0
 ```
 
 ## 开发

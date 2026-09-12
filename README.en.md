@@ -27,7 +27,7 @@ DSH web plugin: cross-session token usage, request count, and optional cost anal
 ## Install
 
 ```sh
-dsh plugin --profile web add dsh-token-usage-stats@0.3.9
+dsh plugin --profile web add dsh-token-usage-stats@0.3.13
 ```
 
 The package's `cordis.patch.yml` inserts the plugin row; the browser half loads from the `dsh.client` manifest. Restart the host (or reload the GUI) after installing.
@@ -44,7 +44,7 @@ Open the dashboard from the sidebar footer entry, or browse directly to `http://
 
 ## Config
 
-The inserted row accepts `config.currency` (report cost in this currency) and `config.pricing` (per-model per-million-token prices). Cost is computed with a **peak/off-peak split**: peak hours are Beijing time 09:00-12:00 and 14:00-18:00, every other Beijing hour is off-peak; weekends (Beijing Saturday/Sunday) are always off-peak. A model priced with a `peak`/`offpeak` pair uses the matching tier by the usage record's time; a model priced with only the four flat keys uses that price at any hour. The default row ships `currency: CNY` and peak/off-peak pricing for `deepseek-v4-flash`, `deepseek-v4-pro`, and `deepseek-v4-flash-vision-exp`.
+The inserted row accepts `config.currency` (report cost in this currency) and `config.pricing` (per-model per-million-token prices). Cost is computed with a **peak/off-peak split**: peak hours are Beijing time 09:00-12:00 and 14:00-18:00, every other Beijing hour is off-peak; weekends (Beijing Saturday/Sunday) are always off-peak. A model priced with a `peak`/`offpeak` pair uses the matching tier by the usage record's time; a model priced with only the four flat keys uses that price at any hour. The default row ships `currency: CNY` and peak/off-peak pricing for `deepseek-flash` and `deepseek-v4-pro` (with historical model alias fallback).
 
 Example override in the profile's own `cordis.patch.yml`:
 
@@ -54,17 +54,17 @@ Example override in the profile's own `cordis.patch.yml`:
       config:
         currency: USD
         pricing:
-          deepseek-v4-flash:
+          deepseek-flash:
             peak:
-              uncachedInputPerMillion: 3.0
-              cacheReadPerMillion: 0.10
+              uncachedInputPerMillion: 2.0
+              cacheReadPerMillion: 0.04
               cacheWritePerMillion: 0
-              outputPerMillion: 9.0
+              outputPerMillion: 8.0
             offpeak:
-              uncachedInputPerMillion: 1.5
-              cacheReadPerMillion: 0.05
+              uncachedInputPerMillion: 1.0
+              cacheReadPerMillion: 0.02
               cacheWritePerMillion: 0
-              outputPerMillion: 4.5
+              outputPerMillion: 4.0
 ```
 
 ## Development

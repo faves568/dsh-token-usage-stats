@@ -977,8 +977,30 @@ export class TokenUsageStats extends Service {
    * @param time - the usage record's time (Unix ms) used to pick the tier.
    * @param key - the price key to read.
    */
+  /** Resolve pricing with historical model alias fallback (e.g. deepseek-v4-flash, deepseek-chat -> deepseek-flash). */
+  private _resolvePricing(model: string): ModelPricing | undefined {
+    const direct = this.config.pricing[model]
+    if (direct !== undefined) return direct
+    if (
+      model === 'deepseek-v4-flash'
+      || model === 'deepseek-v4-flash-vision-exp'
+      || model === 'deepseek-chat'
+      || model === 'deepseek-reasoner'
+    ) {
+      return this.config.pricing['deepseek-flash']
+    }
+    return undefined
+  }
+
+  /**
+   * Look up a model's configured price key, picking peak/off-peak when
+   * the model is tiered, else the flat top-level key.
+   * @param model - provider model id.
+   * @param time - the usage record's time (Unix ms) used to pick the tier.
+   * @param key - the price key to read.
+   */
   private _price(model: string, time: number, key: keyof ModelPriceTier): number | undefined {
-    const price = this.config.pricing[model]
+    const price = this._resolvePricing(model)
     if (price === undefined) return undefined
     if (price.peak !== undefined || price.offpeak !== undefined) {
       const tier = this._isPeak(time) ? (price.peak ?? price.offpeak) : (price.offpeak ?? price.peak)
@@ -989,7 +1011,7 @@ export class TokenUsageStats extends Service {
 
   /** Compute cost for one usage record, or undefined when no pricing is configured. */
   private _costFor(model: string, usage: TokenUsage, time: number): number | undefined {
-    if (this.config.pricing[model] === undefined) return undefined
+    if (this._resolvePricing(model) === undefined) return undefined
     return (
       usage.inputTokens * (this._price(model, time, 'uncachedInputPerMillion') ?? 0)
       + (usage.cacheReadTokens ?? 0) * (this._price(model, time, 'cacheReadPerMillion') ?? 0)
@@ -1009,23 +1031,21 @@ export class TokenUsageStats extends Service {
       totalTokens: 0,
     }
     let cost: number | undefined
-    let allPriced = true
     for (const record of usageRecords) {
       totals.uncachedInputTokens += record.usage.inputTokens
       totals.cacheReadTokens += record.usage.cacheReadTokens ?? 0
       totals.cacheWriteTokens += record.usage.cacheWriteTokens ?? 0
       totals.outputTokens += record.usage.outputTokens
       const recordCost = this._costFor(record.model, record.usage, record.time)
-      if (recordCost === undefined) allPriced = false
-      else cost = (cost ?? 0) + recordCost
+      if (recordCost !== undefined) {
+        cost = (cost ?? 0) + recordCost
+      }
     }
     totals.totalTokens = totals.uncachedInputTokens
       + totals.cacheReadTokens
       + totals.cacheWriteTokens
       + totals.outputTokens
-    // Report cost only when every contributing model has a pricing entry;
-    // a partially priced scope must not present a partial sum as the full cost.
-    if (cost !== undefined && allPriced) totals.cost = cost
+    if (cost !== undefined) totals.cost = cost
     return totals
   }
 

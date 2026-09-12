@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.13] - 2026-09-12
+
+### 💰 价格体系与模型配置更新 (Official Model Pricing & Alias Fallback)
+- **同步 DeepSeek 官方最新双模型体系**：
+  - 更新默认初始化配置与本地生效配置为官方两大核心模型：`deepseek-flash` (DeepSeek-V4.1-Flash) 与 `deepseek-v4-pro` (DeepSeek-V4-Pro-0813)；
+  - 填入官方最新峰谷阶梯单价（`deepseek-flash` 闲时缓存命中 0.02 / 未命中 1.00 / 输出 4.00 元/M，高峰缓存命中 0.04 / 未命中 2.00 / 输出 8.00 元/M）。
+- **历史模型别名智能平滑兼容**：
+  - 底层引入 `_resolvePricing` 别名回退机制，历史日志中的 `deepseek-v4-flash*`、`deepseek-chat`、`deepseek-reasoner` 自动平滑采用 `deepseek-flash` 单价进行统计；
+  - 优化全局 `totals.cost` 累加鲁棒性，杜绝因未定价异构模型导致整屏总金额变为 `undefined` 的问题，确保历史与当下所有会话均能 100% 精确计费。
+- **配置优先级与持久化保障**：
+  - 严格确保用户手动在界面添加的自定义模型（包括固定单价与分时峰谷计价）具备最高优先级，保存即落盘 `token-usage-pricing.json` 并实时生效，重启绝不丢失。
+
+---
+
 ## [0.3.12] - 2026-09-08
 
 ### 🚀 极速解析与精准去重 (High-speed Native Parsing & Idempotency)
