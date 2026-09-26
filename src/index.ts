@@ -649,10 +649,11 @@ export class TokenUsageStats extends Service {
       this.states.set(session, state)
     }
 
+    const events = (session as unknown as { events?: readonly SessionEvent[] }).events ?? session.snapshotEvents()
     // 若尚未记住模型，从现有事件中前向快速检索
-    if (!state.model && session.events.length > 0) {
-      for (let i = 0; i < session.events.length; i++) {
-        const ev = session.events[i]
+    if (!state.model && events.length > 0) {
+      for (let i = 0; i < events.length; i++) {
+        const ev = events[i]
         if (ev?.type === 'request/context') {
           state.provider = ev.data.provider
           state.model = ev.data.model
@@ -668,10 +669,10 @@ export class TokenUsageStats extends Service {
       }
     }
 
-    while (state.consumedEvents < session.events.length) {
+    while (state.consumedEvents < events.length) {
       // Session construction validates contiguous seqs, so the current index exists.
       // oxlint-disable-next-line typescript/no-non-null-assertion
-      const event = session.events[state.consumedEvents]!
+      const event = events[state.consumedEvents]!
       this._foldEvent(session.id, state, event)
       state.consumedEvents += 1
     }
@@ -860,18 +861,6 @@ export class TokenUsageStats extends Service {
           this.sessionModels.set(session, { provider: state.provider, model: state.model })
         }
         break
-      case 'assistant/chunk':
-        if (event.data.chunk.type === 'usage') {
-          this._recordUsage(
-            session,
-            state,
-            event.time,
-            event.data.turn,
-            event.data.step,
-            event.data.chunk.usage,
-          )
-        }
-        break
       case 'assistant/message':
         // One API request per completed model call: `request/header` and
         // `request/context` are change-only snapshots, so the only per-request
@@ -891,8 +880,28 @@ export class TokenUsageStats extends Service {
       case 'session/title':
         this.titles.set(session, event.data.title)
         break
-      default:
+      default: {
+        const rawEvent = event as unknown as {
+          type: string
+          time: number
+          data?: {
+            turn?: number
+            step?: number
+            chunk?: { type?: string; usage?: TokenUsage }
+          }
+        }
+        if (rawEvent.type === 'assistant/chunk' && rawEvent.data?.chunk?.type === 'usage' && rawEvent.data.chunk.usage) {
+          this._recordUsage(
+            session,
+            state,
+            rawEvent.time,
+            rawEvent.data.turn ?? 0,
+            rawEvent.data.step ?? 0,
+            rawEvent.data.chunk.usage,
+          )
+        }
         break
+      }
     }
   }
 

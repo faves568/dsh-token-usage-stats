@@ -2,8 +2,9 @@
  * Token-usage dashboard plugin, browser half: registers one sidebar footer
  * action that links to the host-served dashboard page.
  */
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import { TokenUsageStatsAction } from './TokenUsageStatsAction.tsx'
 import { en, NS, zh, type UsageStatsKey } from './locales.ts'

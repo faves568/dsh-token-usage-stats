@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.14] - 2026-09-26
+
+### 兼容性与运行环境升级 (Compatibility with dsh 0.1.7-rc.2)
+- **适配 DSH 0.1.7 核心架构变更**：
+  - 更新 `@deepseek-ai/dsh-util-values` 依赖规范为 `^0.1.1-rc.2`，解决 peerDependencies 精确版本不匹配问题。
+  - 迁移客户端上下文体系：移除已弃用的 `@deepseek-ai/dsh-client-runtime`，切换为 `@deepseek-ai/dsh-client-ui-renderer` 与 `@deepseek-ai/cordis` 提供的标准 `Context` 和 `slots` 注入。
+  - 兼容最新 `Session` 事件模型：适配新版 `session.snapshotEvents()` 与 `'assistant/message'` 统一用量携带机制，平滑兼容历史 `'assistant/chunk'`。
+
+---
+
 ## [0.3.13] - 2026-09-12
 
 ### 💰 价格体系与模型配置更新 (Official Model Pricing & Alias Fallback)
