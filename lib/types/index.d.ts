@@ -7,7 +7,7 @@
 import { Service } from '@deepseek-ai/cordis';
 import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
-import type { PricingConfigPayload, TokenUsageStatsConfig, TokenUsageStatsQuery, TokenUsageStatsSnapshot } from './types.ts';
+import type { PricingConfigPayload, PricingConfigView, TokenUsageStatsConfig, TokenUsageStatsQuery, TokenUsageStatsSnapshot } from './types.ts';
 export type * from './types.ts';
 declare module '@deepseek-ai/cordis' {
     interface Context {
@@ -47,6 +47,16 @@ export declare class TokenUsageStats extends Service {
     constructor(ctx: Context, config?: TokenUsageStatsConfig);
     /** Return the currently effective pricing settings and schedule. */
     getPricingConfig(): PricingConfigPayload;
+    /**
+     * Return the price book as the dashboard editor needs it: every key that can
+     * bill a request, with the built-in defaults alongside so the page can badge
+     * user overrides.
+     *
+     * Unlike {@link getPricingConfig}, `pricing` here is the effective book —
+     * built-in defaults with configuration and persisted prices layered on top —
+     * matching what {@link _resolvePricing} actually charges.
+     */
+    getPricingConfigView(): PricingConfigView;
     /** Atomically persist and immediately apply updated pricing rules. */
     updatePricingConfig(payload: PricingConfigPayload): void;
     /**
@@ -92,20 +102,14 @@ export declare class TokenUsageStats extends Service {
      */
     private _isPeak;
     /**
-     * One price key for a model at the given time: the peak/off-peak tier when
-     * the model is tiered, else the flat top-level key.
-     * @param model - provider model id.
-     * @param time - the usage record's time (Unix ms) used to pick the tier.
-     * @param key - the price key to read.
-     */
-    /**
-     * Resolve pricing for a provider model id, including historical and
-     * vendor-specific aliases of the two published models.
+     * Resolve pricing for a provider-reported model id.
      *
-     * `deepseek-flash` is DeepSeek-V4.1-Flash and `deepseek-v4-pro` is
-     * DeepSeek-V4-Pro-0813. Providers report either the price-book key or an
-     * upstream id (`deepseek-v4.1-flash`, `deepseek-v4.1-flash-sg`, …), so both
-     * spellings must reach the same price.
+     * Precedence: the user's own configuration first — both the verbatim id and
+     * the built-in key it resolves to, so a configured `deepseek-flash` also
+     * covers a provider that reports `deepseek-v4.1-flash` — then the built-in
+     * price book. An id in neither stays unpriced rather than being charged at
+     * another model's rate.
+     * @param model - provider-reported model id.
      */
     private _resolvePricing;
     /**

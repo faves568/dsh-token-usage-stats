@@ -5,12 +5,19 @@
  *
  * @module @deepseek-ai/dsh-token-usage-stats-web/dashboard
  */
+import type { ModelPricing } from './types.ts'
 
 /**
  * HTML document rendered at `/token-usage-stats`.
+ * @param builtinPricing - the plugin's built-in price book, embedded as the
+ *   editor's fallback so the page still lists models when the JSON endpoint is
+ *   unreachable.
  * @returns the complete self-contained dashboard document.
  */
-export function renderUsageDashboard(): string {
+export function renderUsageDashboard(
+  builtinPricing: Readonly<Record<string, ModelPricing>>,
+): string {
+  const builtinJson = JSON.stringify(builtinPricing).replace(/</g, '\\u003c')
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -308,6 +315,51 @@ export function renderUsageDashboard(): string {
     border-color: rgba(239, 68, 68, 0.25);
     background: rgba(239, 68, 68, 0.08);
   }
+  .btn-icon-restore {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--muted);
+    border: 1px solid var(--line);
+    background: transparent;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .btn-icon-restore:hover {
+    color: var(--accent);
+    border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+  }
+
+  /* 模型条目的来源标记：内置默认 / 已覆盖 / 自定义 */
+  .model-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 7px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  .model-badge-builtin {
+    color: var(--muted);
+    background: color-mix(in srgb, var(--muted) 12%, transparent);
+    border: 1px solid var(--line);
+  }
+  .model-badge-override {
+    color: #d97706;
+    background: rgba(217, 119, 6, 0.12);
+    border: 1px solid rgba(217, 119, 6, 0.28);
+  }
+  .model-card-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
 
   .btn-save {
     display: inline-flex;
@@ -458,6 +510,42 @@ export function renderUsageDashboard(): string {
     padding: 14px 16px;
     margin-bottom: 12px;
   }
+  .pricing-filter-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+  }
+  .pricing-filter-row .model-search-input {
+    flex: 1;
+    min-width: 0;
+    padding: 6px 10px;
+    font-size: 13px;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    background: var(--panel);
+    color: var(--text);
+  }
+  .pricing-count {
+    flex: none;
+    font-size: 12px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .pricing-hint {
+    margin: 0 0 12px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--muted);
+  }
+  .pricing-hint code {
+    font-size: 11px;
+    padding: 1px 4px;
+    border-radius: 3px;
+    background: color-mix(in srgb, var(--bg) 70%, transparent);
+    border: 1px solid var(--line);
+  }
+
   .model-card-head {
     display: flex;
     align-items: center;
@@ -723,7 +811,7 @@ export function renderUsageDashboard(): string {
       </div>
   </section>
 
-  <p class="foot">数据来自当前进程内的 <code>ctx.tokenUsageStats</code>，页面自动每 10 秒刷新一次。成本只有在配置了模型定价时才会显示。</p>
+  <p class="foot">数据来自当前进程内的 <code>ctx.tokenUsageStats</code>，页面自动每 10 秒刷新一次。成本按插件内置价目表计算，未收录的模型显示「未配置定价」。</p>
 </main>
 
 <div id="pricingModal" class="modal-backdrop" hidden>
@@ -772,7 +860,7 @@ export function renderUsageDashboard(): string {
       </div>
 
       <div>
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:10px;flex-wrap:wrap;">
           <h3 style="margin:0;font-size:13px;font-weight:600;">模型计费配置（每 1,000,000 Tokens）</h3>
           <button type="button" class="btn-text" id="addModelBtn">
             <svg class="ui-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -781,6 +869,13 @@ export function renderUsageDashboard(): string {
             <span>添加模型</span>
           </button>
         </div>
+        <div class="pricing-filter-row">
+          <input type="search" id="modelSearch" class="model-search-input" placeholder="搜索模型名称，如 claude / deepseek / glm">
+          <span class="pricing-count" id="modelCount"></span>
+        </div>
+        <p class="pricing-hint">
+          插件内置默认价目表，未修改的模型直接按内置价计费，无需配置。带「已覆盖」标记的条目会随保存写入 <code>token-usage-pricing.json</code>，并覆盖内置价；「恢复默认」可撤销覆盖。
+        </p>
         <div id="modelList"></div>
       </div>
     </div>
@@ -1277,7 +1372,10 @@ export function renderUsageDashboard(): string {
     }
   }
 
-  // --- 价格配置 Modal 控制逻辑 ---
+  // 内置价目表随页面下发，兜底 JSON 接口不可用时编辑器仍能列出全部模型
+  var builtinPricingFallback = ${builtinJson}
+
+  // 价格配置 Modal 控制逻辑
   var defaultPricingConfig = {
     currency: 'CNY',
     peakSchedule: {
@@ -1287,36 +1385,41 @@ export function renderUsageDashboard(): string {
         { start: '14:00', end: '18:00' }
       ]
     },
-    pricing: {
-      'deepseek-flash': {
-        peak: {
-          uncachedInputPerMillion: 2.0,
-          cacheReadPerMillion: 0.04,
-          cacheWritePerMillion: 0,
-          outputPerMillion: 8.0
-        },
-        offpeak: {
-          uncachedInputPerMillion: 1.0,
-          cacheReadPerMillion: 0.02,
-          cacheWritePerMillion: 0,
-          outputPerMillion: 4.0
-        }
-      },
-      'deepseek-v4-pro': {
-        peak: {
-          uncachedInputPerMillion: 9.0,
-          cacheReadPerMillion: 0.3,
-          cacheWritePerMillion: 0,
-          outputPerMillion: 27.0
-        },
-        offpeak: {
-          uncachedInputPerMillion: 4.5,
-          cacheReadPerMillion: 0.15,
-          cacheWritePerMillion: 0,
-          outputPerMillion: 13.5
-        }
-      }
+    pricing: builtinPricingFallback
+  }
+
+  /** 内置价目表：判断「已覆盖」与「恢复默认」的基准。 */
+  var builtinPricing = builtinPricingFallback
+
+  /** 当前编辑中的完整价目表（内置 + 用户覆盖），按模型名索引。 */
+  var currentPricing = {}
+
+  /** 数值比较：缺省字段等价于 0，与宿主的判定保持一致。 */
+  function sameTier(a, b) {
+    var keys = ['uncachedInputPerMillion', 'cacheReadPerMillion', 'cacheWritePerMillion', 'outputPerMillion']
+    for (var i = 0; i < keys.length; i++) {
+      if ((Number(a && a[keys[i]]) || 0) !== (Number(b && b[keys[i]]) || 0)) return false
     }
+    return true
+  }
+
+  function samePricing(a, b) {
+    a = a || {}
+    b = b || {}
+    var tieredA = !!(a.peak || a.offpeak)
+    var tieredB = !!(b.peak || b.offpeak)
+    if (tieredA !== tieredB) return false
+    if (tieredA && (!sameTier(a.peak, b.peak) || !sameTier(a.offpeak, b.offpeak))) return false
+    return sameTier(a, b)
+  }
+
+  /** 「已覆盖」= 用户配置与内置价不同；不在内置表中的自建模型同样算已覆盖。 */
+  function isOverridden(model) {
+    var builtin = builtinPricing[model]
+    var current = currentPricing[model]
+    if (current === undefined) return false
+    if (builtin === undefined) return true
+    return !samePricing(current, builtin)
   }
 
   function showToast(msg, isError) {
@@ -1449,35 +1552,196 @@ export function renderUsageDashboard(): string {
       + '</div>'
   }
 
-  function renderModelCards(pricing) {
-    var container = $('modelList')
-    var entries = Object.entries(pricing)
-    if (entries.length === 0) {
-      container.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:12px 0;">暂无模型配置，点击上方「添加模型」添加</div>'
+  /** 把当前 DOM 中可见卡片的值写回 currentPricing；隐藏的条目保持不变。 */
+  function syncFromDom() {
+    var cards = document.querySelectorAll('#modelList .model-card')
+    cards.forEach(function (card) {
+      var nameInput = card.querySelector('.model-name-input')
+      var name = nameInput ? nameInput.value.trim() : ''
+      // 名称为空或已被拒绝时，沿用卡片当前的键，避免把整张卡片写丢
+      if (!name || nameInput.classList.contains('input-invalid')) {
+        name = card.getAttribute('data-model') || ''
+      }
+      if (!name) return
+      var original = card.getAttribute('data-model') || ''
+      if (original !== '' && original !== name) delete currentPricing[original]
+      var mode = currentMode(card)
+      if (mode === 'tiered') {
+        currentPricing[name] = {
+          peak: collectTierFromFields(card, 'peak'),
+          offpeak: collectTierFromFields(card, 'offpeak'),
+        }
+      } else {
+        currentPricing[name] = collectTierFromFields(card, 'flat')
+      }
+    })
+    return currentPricing
+  }
+
+  function matchesQuery(model, query) {
+    if (query === '') return true
+    return model.toLowerCase().indexOf(query) !== -1
+  }
+
+  /** 读取某张卡片当前的计价模式。 */
+  function currentMode(card) {
+    var radio = card.querySelector('.segmented-control input:checked, .tier-mode-toggle input:checked')
+    return radio ? radio.value : 'flat'
+  }
+
+  /** 徽标与操作按钮：整表重绘和就地改名共用同一份生成逻辑。 */
+  function cardChrome(model) {
+    var inBuiltin = builtinPricing[model] !== undefined
+    var overridden = isOverridden(model)
+    var badge = !inBuiltin
+      ? '<span class="model-badge model-badge-override">自定义</span>'
+      : (overridden
+        ? '<span class="model-badge model-badge-override">已覆盖</span>'
+        : '<span class="model-badge model-badge-builtin">内置默认</span>')
+
+    // 内置价目表里的模型删除即等于回退默认价，因此提供「恢复默认」；
+    // 自建模型没有内置价可回退，仍是删除。
+    var action = inBuiltin
+      ? (overridden
+        ? '<button type="button" class="btn-icon-restore restore-model-btn" data-model="' + esc(model) + '" title="恢复该模型的内置默认价">'
+          + '<svg class="ui-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+          + '  <path d="M3 12a9 9 0 1 0 3-6.7L3 8"></path><path d="M3 3v5h5"></path>'
+          + '</svg>'
+          + '<span>恢复默认</span>'
+          + '</button>'
+        : '')
+      : '<button type="button" class="btn-icon-danger del-model-btn" data-model="' + esc(model) + '" title="删除该自建模型">'
+        + '<svg class="ui-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+        + '  <polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>'
+        + '</svg>'
+        + '<span>删除</span>'
+        + '</button>'
+    return { badge: badge, action: action }
+  }
+
+  /** 就地刷新单张卡片的徽标与操作按钮，不重排列表。 */
+  function refreshCardChrome(card) {
+    var chrome = cardChrome(card.getAttribute('data-model') || '')
+    var title = card.querySelector('.model-card-title')
+    if (title) {
+      var oldBadge = title.querySelector('.model-badge')
+      if (oldBadge) oldBadge.parentNode.removeChild(oldBadge)
+      if (chrome.badge) title.insertAdjacentHTML('beforeend', chrome.badge)
+    }
+    var head = card.querySelector('.model-card-head')
+    if (head) {
+      var oldAction = head.querySelector('.restore-model-btn, .del-model-btn')
+      if (oldAction) oldAction.parentNode.removeChild(oldAction)
+      if (chrome.action) head.insertAdjacentHTML('beforeend', chrome.action)
+    }
+  }
+
+  /** 刷新「共 N 个模型」计数，供整表重绘与就地改名共用。 */
+  function updateModelCount() {
+    var count = $('modelCount')
+    if (!count) return
+    var names = Object.keys(currentPricing)
+    var search = $('modelSearch')
+    var query = search ? search.value.trim().toLowerCase() : ''
+    if (query === '') {
+      count.textContent = '共 ' + names.length + ' 个模型，' + names.filter(isOverridden).length + ' 个已覆盖'
+    } else {
+      count.textContent = '匹配 ' + names.filter(function (name) { return matchesQuery(name, query) }).length
+        + ' / ' + names.length + ' 个模型'
+    }
+  }
+
+  /**
+   * 提交模型改名。列表按名称排序，若在此整表重绘，刚添加的卡片会立刻跳到
+   * 排序后的位置并滚出视野，看起来就像"卡片消失"；因此改为就地改名：只
+   * 更新该卡片的键、单选项分组与徽标，列表顺序和焦点都保持不变。
+   */
+  function commitModelRename(card) {
+    var input = card.querySelector('.model-name-input')
+    if (!input) return
+    var prev = card.getAttribute('data-model') || ''
+    var next = input.value.trim()
+    input.classList.remove('input-invalid')
+
+    if (next === prev) {
+      input._rejected = ''
       return
     }
 
-    container.innerHTML = entries.map(function (item, idx) {
-      var model = item[0]
-      var val = item[1] || {}
+    // 失焦与 change 会为同一次编辑各触发一次，错误提示只报一次
+    var announce = input._rejected !== next
+    input._rejected = next
+
+    if (!next) {
+      input.classList.add('input-invalid')
+      if (announce) showToast('模型名称不能为空，请填写后再移开焦点', true)
+      return
+    }
+
+    // 同名条目会互相覆盖，先拦下来，避免静默丢掉其中一个的价格。
+    // 只标红提示、不抢焦点：失焦时强行 focus 会把焦点锁死在输入框里。
+    // 该卡片仍以 data-model 为准，保存前的校验也会再次拦截。
+    if (Object.prototype.hasOwnProperty.call(currentPricing, next)) {
+      input.classList.add('input-invalid')
+      if (announce) showToast('模型名称「' + next + '」已存在，请换一个名称', true)
+      return
+    }
+
+    input._rejected = ''
+    syncFromDom()
+    card.setAttribute('data-model', next)
+    card.querySelectorAll('input[type="radio"]').forEach(function (radio) {
+      radio.setAttribute('name', 'mode_' + next)
+    })
+    refreshCardChrome(card)
+
+    // 改名后可能不再匹配当前搜索词，只有这种情况才需要重绘
+    var search = $('modelSearch')
+    var query = search ? search.value.trim().toLowerCase() : ''
+    if (query !== '' && !matchesQuery(next, query)) {
+      renderModelCards()
+    } else {
+      updateModelCount()
+    }
+  }
+
+  function renderModelCards() {
+    var container = $('modelList')
+    var search = $('modelSearch')
+    var query = search ? search.value.trim().toLowerCase() : ''
+    var names = Object.keys(currentPricing).sort()
+    var shown = names.filter(function (name) { return matchesQuery(name, query) })
+
+    updateModelCount()
+
+    if (shown.length === 0) {
+      container.innerHTML = names.length === 0
+        ? '<div style="color:var(--muted);font-size:12px;padding:12px 0;">暂无模型配置，点击上方「添加模型」添加</div>'
+        : '<div style="color:var(--muted);font-size:12px;padding:12px 0;">没有匹配「' + esc(query) + '」的模型</div>'
+      return
+    }
+
+    container.innerHTML = shown.map(function (model) {
+      var val = currentPricing[model] || {}
       var isTiered = !!(val.peak || val.offpeak)
       var flat = !isTiered ? val : (val.peak || {})
       var peak = val.peak || {}
       var offpeak = val.offpeak || {}
+      var chrome = cardChrome(model)
+      var badge = chrome.badge
+      var action = chrome.action
 
-      return '<div class="model-card" data-model-idx="' + idx + '">'
+      return '<div class="model-card" data-model="' + esc(model) + '">'
         + '<div class="model-card-head">'
-        + '  <input type="text" class="model-name-input" value="' + esc(model) + '" placeholder="模型名称 (如 deepseek-chat)">'
-        + '  <div class="segmented-control">'
-        + '    <label><input type="radio" name="mode_' + idx + '" value="flat" ' + (!isTiered ? 'checked' : '') + '><span class="seg-btn">统一固定价格</span></label>'
-        + '    <label><input type="radio" name="mode_' + idx + '" value="tiered" ' + (isTiered ? 'checked' : '') + '><span class="seg-btn">分时峰谷计价</span></label>'
+        + '  <div class="model-card-title">'
+        + '    <input type="text" class="model-name-input" value="' + esc(model) + '" placeholder="模型名称 (如 deepseek-chat)">'
+        + badge
         + '  </div>'
-        + '  <button type="button" class="btn-icon-danger del-model-btn" data-idx="' + idx + '" title="删除模型配置">'
-        + '    <svg class="ui-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
-        + '      <polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>'
-        + '    </svg>'
-        + '    <span>删除</span>'
-        + '  </button>'
+        + '  <div class="segmented-control">'
+        + '    <label><input type="radio" name="mode_' + esc(model) + '" value="flat" ' + (!isTiered ? 'checked' : '') + '><span class="seg-btn">统一固定价格</span></label>'
+        + '    <label><input type="radio" name="mode_' + esc(model) + '" value="tiered" ' + (isTiered ? 'checked' : '') + '><span class="seg-btn">分时峰谷计价</span></label>'
+        + '  </div>'
+        + action
         + '</div>'
         + '<div class="pricing-grids-container ' + (isTiered ? 'is-split' : '') + '">'
         + (isTiered
@@ -1514,23 +1778,59 @@ export function renderUsageDashboard(): string {
         + '</div>'
     }).join('')
 
-    container.querySelectorAll('.del-model-btn').forEach(function (btn) {
-      btn.addEventListener('click', function () {
-        var idx = parseInt(btn.getAttribute('data-idx'), 10)
-        var list = collectPricing()
-        delete list[Object.keys(list)[idx]]
-        renderModelCards(list)
-      })
+  }
+
+  /**
+   * 列表内的事件全部走事件委托：卡片会被就地改名并重建徽标/按钮，逐个绑定
+   * 会在下次重绘或就替换节点后失效。此函数只在启动时调用一次。
+   */
+  function bindModelListEvents() {
+    var container = $('modelList')
+
+    container.addEventListener('click', function (e) {
+      var restore = e.target.closest ? e.target.closest('.restore-model-btn') : null
+      if (restore) {
+        var restoreName = restore.getAttribute('data-model')
+        syncFromDom()
+        if (builtinPricing[restoreName] !== undefined) currentPricing[restoreName] = builtinPricing[restoreName]
+        renderModelCards()
+        return
+      }
+      var del = e.target.closest ? e.target.closest('.del-model-btn') : null
+      if (del) {
+        var delName = del.getAttribute('data-model')
+        syncFromDom()
+        delete currentPricing[delName]
+        renderModelCards()
+      }
     })
 
-    container.querySelectorAll('.model-card').forEach(function (card) {
-      var radios = card.querySelectorAll('.segmented-control input[type="radio"], .tier-mode-toggle input[type="radio"]')
-      radios.forEach(function (r) {
-        r.addEventListener('change', function () {
-          var p = collectPricing()
-          renderModelCards(p)
-        })
-      })
+    container.addEventListener('change', function (e) {
+      var target = e.target
+      if (target.classList && target.classList.contains('model-name-input')) {
+        commitModelRename(target.closest('.model-card'))
+        return
+      }
+      if (target.type === 'radio') {
+        syncFromDom()
+        renderModelCards()
+      }
+    })
+
+    // 改名只在失焦/回车时落盘，逐字输入不重绘，避免编辑过程被打断
+    container.addEventListener('blur', function (e) {
+      var target = e.target
+      if (target.classList && target.classList.contains('model-name-input')) {
+        commitModelRename(target.closest('.model-card'))
+      }
+    }, true)
+
+    container.addEventListener('keydown', function (e) {
+      var target = e.target
+      if (e.key === 'Enter' && target.classList && target.classList.contains('model-name-input')) {
+        e.preventDefault()
+        target.blur()
+      }
     })
   }
 
@@ -1545,26 +1845,6 @@ export function renderUsageDashboard(): string {
     if (!isNaN(cacheWrite)) res.cacheWritePerMillion = cacheWrite
     if (!isNaN(output)) res.outputPerMillion = output
     return res
-  }
-
-  function collectPricing() {
-    var cards = document.querySelectorAll('#modelList .model-card')
-    var result = {}
-    cards.forEach(function (card) {
-      var name = card.querySelector('.model-name-input').value.trim()
-      if (!name) return
-      var modeRadio = card.querySelector('.segmented-control input:checked, .tier-mode-toggle input:checked')
-      var mode = modeRadio ? modeRadio.value : 'flat'
-      if (mode === 'tiered') {
-        result[name] = {
-          peak: collectTierFromFields(card, 'peak'),
-          offpeak: collectTierFromFields(card, 'offpeak'),
-        }
-      } else {
-        result[name] = collectTierFromFields(card, 'flat')
-      }
-    })
-    return result
   }
 
   async function openPricingModal() {
@@ -1592,9 +1872,20 @@ export function renderUsageDashboard(): string {
     $('weekendOffpeak').checked = ps.weekendOffpeak !== false
     renderIntervals(ps.intervals || defaultPricingConfig.peakSchedule.intervals)
 
-    var pricing = data.pricing || defaultPricingConfig.pricing
-    renderModelCards(pricing)
+    // 接口下发的是「生效价目表」（内置 + 覆盖）与内置表本身；两者都拿到时
+    // 才能准确标记「已覆盖」。若宿主未下发内置表（旧版本），以页面内置的
+    // 价目表为底再叠加配置项，仍能列出全部模型。
+    var hasBuiltin = !!data.builtinPricing
+    builtinPricing = data.builtinPricing || builtinPricingFallback
+    var configured = data.pricing || {}
+    // 浅拷贝一层，避免编辑中的价目表与内置基准共享顶层引用
+    currentPricing = hasBuiltin ? Object.assign({}, configured) : Object.assign({}, builtinPricing, configured)
+    var search = $('modelSearch')
+    if (search) search.value = ''
+    renderModelCards()
   }
+
+  bindModelListEvents()
 
   $('addIntervalBtn').addEventListener('click', function () {
     var res = collectIntervals()
@@ -1602,28 +1893,33 @@ export function renderUsageDashboard(): string {
     renderIntervals(res.intervals)
   })
 
+  $('modelSearch').addEventListener('input', function () {
+    syncFromDom()
+    renderModelCards()
+  })
+
   $('addModelBtn').addEventListener('click', function () {
-    var list = collectPricing()
-    var newKey = 'custom-model-' + (Object.keys(list).length + 1)
-    var newEntry = {
+    syncFromDom()
+    var index = 1
+    var newKey = 'custom-model-' + index
+    while (currentPricing[newKey] !== undefined) {
+      index += 1
+      newKey = 'custom-model-' + index
+    }
+    currentPricing[newKey] = {
       uncachedInputPerMillion: 2.0,
       cacheReadPerMillion: 0.5,
       cacheWritePerMillion: 0,
       outputPerMillion: 8.0,
     }
-    // 将新添加的模型排在最前面
-    var updated = {}
-    updated[newKey] = newEntry
-    for (var k in list) {
-      if (Object.prototype.hasOwnProperty.call(list, k)) {
-        updated[k] = list[k]
-      }
-    }
-    renderModelCards(updated)
+    // 新建的模型可能被当前搜索词过滤掉，清空搜索保证它可见
+    var search = $('modelSearch')
+    if (search) search.value = ''
+    renderModelCards()
 
     // 自动聚焦新模型卡片的输入框并全选名称，提升输入体验
     setTimeout(function () {
-      var firstInput = document.querySelector('#modelList .model-card:first-child .model-name-input')
+      var firstInput = document.querySelector('#modelList .model-card[data-model="' + newKey + '"] .model-name-input')
       if (firstInput) {
         firstInput.focus()
         firstInput.select()
@@ -1633,7 +1929,7 @@ export function renderUsageDashboard(): string {
   })
 
   $('resetDefaultBtn').addEventListener('click', function () {
-    if (confirm('确认恢复官方默认价格与时段配置吗？')) {
+    if (confirm('确认把所有模型恢复为内置默认价与默认时段配置吗？')) {
       populateModalForm(defaultPricingConfig)
     }
   })
@@ -1666,19 +1962,32 @@ export function renderUsageDashboard(): string {
 
     // 校验模型名称是否填入
     var nameInputs = document.querySelectorAll('#modelList .model-name-input')
+    var seenNames = {}
     for (var i = 0; i < nameInputs.length; i++) {
       var inp = nameInputs[i]
       inp.classList.remove('input-invalid')
-      if (!inp.value.trim()) {
+      var trimmed = inp.value.trim()
+      if (!trimmed) {
         inp.classList.add('input-invalid')
         inp.focus()
         inp.scrollIntoView({ behavior: 'smooth', block: 'center' })
         showToast('模型名称不能为空，请填写标红的模型名称', true)
         return
       }
+      // 同名条目会互相覆盖，必须拦下来
+      if (Object.prototype.hasOwnProperty.call(seenNames, trimmed)) {
+        inp.classList.add('input-invalid')
+        inp.focus()
+        inp.select()
+        inp.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        showToast('模型名称「' + trimmed + '」重复，请修改标红的名称', true)
+        return
+      }
+      seenNames[trimmed] = true
     }
 
-    var pricing = collectPricing()
+    // 提交完整生效价目表；宿主会剔除与内置价相同的条目，只存真正的覆盖。
+    var pricing = syncFromDom()
     var payload = {
       currency: currency,
       peakSchedule: {

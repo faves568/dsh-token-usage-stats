@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.16] - 2026-10-03
+
+### 内置默认价目表 (Built-in default price book)
+- **新增内置价目表，无需配置即可显示成本**：此前只有 `cordis.patch.yml` 里显式配置的模型（`deepseek-flash`、`deepseek-v4-pro`）能算出成本，其余模型一律显示「未配置定价」。现随插件内置 96 个模型的默认价目表（人民币 / 每百万 token），未配置时自动生效；`config.pricing` 仍按模型逐键覆盖内置价。
+  - 覆盖 DeepSeek、智谱 GLM、通义千问、豆包、Kimi、MiniMax、腾讯混元，以及 OpenAI GPT、Anthropic Claude、Google Gemini、xAI Grok、Mistral、Cohere 等。
+  - 内置模型 id 解析：provider 上报的上游 id（`deepseek-v4.1-flash`、`claude-opus-5.5`、`openai/gpt-6-sol`、`deepseek-v4-flash-202605` 等）自动归入对应条目——忽略大小写、连字符与点号差异，并剥离组织前缀与快照日期后缀。完全无法识别的模型保持不计费，不套用其它模型价格。
+  - 价目表按 [@kenz1117/dsh-ui-usage-billing](https://github.com/kenz1117/dsh-ui-usage-billing)（MIT）的内置目录整理；美元计价条目按 6.79 折算为人民币，按延迟分档的条目（Gemini Standard/Flex）取其标准档，限时促销按刊例价以免固化过期折扣。
+  - `currency` 未配置时默认 `CNY`，与内置价目表币种一致。
+- **价格配置面板改为展示完整价目表**：此前面板只列出 `config.pricing` 里显式配置的模型（默认仅 `deepseek-flash`、`deepseek-v4-pro`），内置价生效后，`claude-opus-5-5` 等模型的成本已经正确计算，却不出现在面板里，容易被误认为没有配置。现 `/api/token-usage-stats/pricing` 同时返回生效价目表（内置价 + 用户覆盖）与内置价目表本身，面板据此列出全部 96 个模型。
+  - 支持按模型名搜索，并显示「共 N 个模型，M 个已覆盖」。
+  - 每个模型标注「内置默认」或「已覆盖」；已覆盖的条目提供「恢复默认」按钮，撤销该项覆盖。
+  - 保存时只持久化与内置价不同的条目，未改动的模型继续跟随插件后续版本更新；「恢复默认」会清空全部自定义价格。
+- 内部新增 `TokenUsageStats#getPricingConfigView()`，与 `getPricingConfig()` 并存：后者仍是纯配置视图，供保存与存储使用。
+- **修复新增模型时卡片「消失」**：面板按模型名排序，此前改名会在 `change` 时整表重绘，刚新增的卡片会立刻跳到排序后的位置并滚出视野，同时输入框失焦，看起来就像卡片被删掉了；若改成的名称正好与已有模型重名，新卡片更会被直接覆盖丢弃。
+  - 改名改为就地更新：只更新该卡片的键、单选项分组与徽标，列表顺序与焦点保持不变；仅当新名称不再匹配当前搜索词时才重绘。
+  - 重名与空名会被拦下并标红提示，保存前也会再校验一次；列表内的事件改为事件委托，避免就地替换节点后按钮和单选项失效。
+
+---
+
 ## [0.3.15] - 2026-10-03
 
 ### 兼容 dsh 0.2.0-rc.2 (Compatibility with dsh 0.2.0-rc.2)

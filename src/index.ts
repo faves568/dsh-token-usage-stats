@@ -20,12 +20,18 @@ import os from 'node:os'
 import path from 'node:path'
 import { renderUsageDashboard } from './dashboard.ts'
 import { parseTokenUsageStatsQuery } from './routes.ts'
+import {
+  BUILTIN_PRICING,
+  BUILTIN_PRICING_CURRENCY,
+  resolveBuiltinPricingKey,
+} from './builtin-pricing.ts'
 import type {
   ModelPricing,
   ModelPriceTier,
   ModelUsage,
   PeakInterval,
   PricingConfigPayload,
+  PricingConfigView,
   SessionUsage,
   TokenUsageStatsConfig,
   TokenUsageStatsQuery,
@@ -106,29 +112,6 @@ function loadPersistedPricing(): TokenUsageStatsConfig | undefined {
 function savePersistedPricing(payload: PricingConfigPayload): void {
   const file = getPricingStoragePath()
   writeFileSync(file, JSON.stringify(payload, null, 2), 'utf8')
-}
-
-/**
- * Upstream model ids that providers report, mapped to their price-book key.
- *
- * The price book keys are `deepseek-flash` (DeepSeek-V4.1-Flash) and
- * `deepseek-v4-pro` (DeepSeek-V4-Pro-0813). Providers such as `buddy` report
- * the upstream ids below instead, so without this mapping those requests would
- * silently contribute no cost. Keys are compared lowercased.
- */
-const PRICING_ALIASES: Readonly<Record<string, string>> = {
-  // DeepSeek-V4.1-Flash
-  'deepseek-v4.1-flash': 'deepseek-flash',
-  'deepseek-v4.1-flash-sg': 'deepseek-flash',
-  'deepseek-v4-flash': 'deepseek-flash',
-  'deepseek-v4-flash-vision-exp': 'deepseek-flash',
-  'deepseek-v4-flash-0731': 'deepseek-flash',
-  'sn-deepseek-v4-1-flash': 'deepseek-flash',
-  'deepseek-chat': 'deepseek-flash',
-  'deepseek-reasoner': 'deepseek-flash',
-  // DeepSeek-V4-Pro-0813
-  'deepseek-v4-pro': 'deepseek-v4-pro',
-  'deepseek-v4-pro-0813': 'deepseek-v4-pro',
 }
 
 const ZSTD_MAGIC = 0xFD2FB528
@@ -228,12 +211,65 @@ function parseTimeString(timeStr: string, field: string): { minutes: number; for
 /** Local mutable face used while building readonly public values. */
 type Mutable<T> = { -readonly [K in keyof T]: T[K] }
 
-const PRICING_KEYS = new Set([
+/** The four per-million price fields, in a stable order for comparisons. */
+const PRICING_KEY_LIST = [
   'uncachedInputPerMillion',
   'cacheReadPerMillion',
   'cacheWritePerMillion',
   'outputPerMillion',
-])
+] as const
+
+const PRICING_KEYS = new Set<string>(PRICING_KEY_LIST)
+
+/**
+ * Compare two price entries by the numbers that can bill a request. An omitted
+ * field equals an explicit `0`, so a user who writes `cacheWritePerMillion: 0`
+ * over a default that leaves it out still counts as unchanged.
+ */
+function samePricing(left: Readonly<ModelPricing>, right: Readonly<ModelPricing>): boolean {
+  const tieredLeft = left.peak !== undefined || left.offpeak !== undefined
+  const tieredRight = right.peak !== undefined || right.offpeak !== undefined
+  if (tieredLeft !== tieredRight) return false
+  if (tieredLeft) {
+    for (const tier of ['peak', 'offpeak'] as const) {
+      const a = left[tier]
+      const b = right[tier]
+      if (a === undefined || b === undefined) {
+        if (a !== b) return false
+        continue
+      }
+      for (const key of PRICING_KEY_LIST) {
+        if ((a[key] ?? 0) !== (b[key] ?? 0)) return false
+      }
+    }
+    // A tiered entry bills from its tiers; stray flat keys are ignored.
+    return true
+  }
+  for (const key of PRICING_KEY_LIST) {
+    if ((left[key] ?? 0) !== (right[key] ?? 0)) return false
+  }
+  return true
+}
+
+/**
+ * Drop configured prices that merely restate the built-in default.
+ *
+ * The dashboard editor shows the whole effective book, so a save would
+ * otherwise persist all ~96 defaults and pin them against future plugin
+ * updates. Only genuine differences (and keys the built-in book does not
+ * know) are kept; costing is unchanged because the built-in book supplies the
+ * dropped values.
+ */
+function pruneRedundantPricing(
+  pricing: Readonly<Record<string, Readonly<ModelPricing>>>,
+): Record<string, ModelPricing> {
+  const kept: Record<string, ModelPricing> = {}
+  for (const [model, price] of Object.entries(pricing)) {
+    const builtin = BUILTIN_PRICING[model]
+    if (builtin === undefined || !samePricing(price, builtin)) kept[model] = price
+  }
+  return kept
+}
 
 /**
  * Upper bound on series buckets. Guards the unauthenticated API against
@@ -260,8 +296,8 @@ function validateConfig(config: TokenUsageStatsConfig): ResolvedConfig {
     }
   }
 
-  const currency = config.currency
-  if (currency !== undefined && (typeof currency !== 'string' || currency.length === 0)) {
+  const currency = config.currency ?? BUILTIN_PRICING_CURRENCY
+  if (typeof currency !== 'string' || currency.length === 0) {
     throw new Error('TokenUsageStatsConfig: currency must be a non-empty string')
   }
 
@@ -501,7 +537,7 @@ export class TokenUsageStats extends Service {
             if (req.method === 'HEAD') {
               res.end()
             } else {
-              res.end(renderUsageDashboard())
+              res.end(renderUsageDashboard(BUILTIN_PRICING))
             }
           },
         })
@@ -558,7 +594,7 @@ export class TokenUsageStats extends Service {
                 'content-type': 'application/json; charset=utf-8',
                 'cache-control': 'no-store',
               })
-              res.end(JSON.stringify(this.getPricingConfig()))
+              res.end(JSON.stringify(this.getPricingConfigView()))
               return
             }
             if (req.method === 'POST') {
@@ -618,15 +654,52 @@ export class TokenUsageStats extends Service {
     }
   }
 
+  /**
+   * Return the price book as the dashboard editor needs it: every key that can
+   * bill a request, with the built-in defaults alongside so the page can badge
+   * user overrides.
+   *
+   * Unlike {@link getPricingConfig}, `pricing` here is the effective book —
+   * built-in defaults with configuration and persisted prices layered on top —
+   * matching what {@link _resolvePricing} actually charges.
+   */
+  getPricingConfigView(): PricingConfigView {
+    const config = this.config.pricing
+    const effective: Record<string, ModelPricing> = {}
+    for (const [model, price] of Object.entries(BUILTIN_PRICING)) effective[model] = price
+    for (const [model, price] of Object.entries(config)) effective[model] = price
+    const overriddenModels: string[] = []
+    for (const [model, price] of Object.entries(config)) {
+      const builtin = BUILTIN_PRICING[model]
+      if (builtin === undefined || !samePricing(price, builtin)) overriddenModels.push(model)
+    }
+    return {
+      ...this.getPricingConfig(),
+      pricing: effective,
+      builtinPricing: { ...BUILTIN_PRICING },
+      overriddenModels,
+    }
+  }
+
   /** Atomically persist and immediately apply updated pricing rules. */
   updatePricingConfig(payload: PricingConfigPayload): void {
+    // The editor submits the whole effective book, including rows the user
+    // never touched; only real differences from the built-in defaults are
+    // stored so plugin updates keep flowing into untouched models.
+    const pricing = pruneRedundantPricing(payload.pricing)
     const configToValidate: TokenUsageStatsConfig = {
       ...(payload.currency === undefined ? {} : { currency: payload.currency }),
       ...(payload.peakSchedule === undefined ? {} : { peakSchedule: payload.peakSchedule }),
-      pricing: payload.pricing,
+      pricing,
     }
     const resolved = validateConfig(configToValidate)
-    savePersistedPricing(payload)
+    // Persist exactly the override fields: a caller echoing back the view
+    // (`builtinPricing`, `overriddenModels`) must not leak into the file.
+    savePersistedPricing({
+      ...(payload.currency === undefined ? {} : { currency: payload.currency }),
+      ...(payload.peakSchedule === undefined ? {} : { peakSchedule: payload.peakSchedule }),
+      pricing,
+    })
     this.config = resolved
   }
 
@@ -1003,26 +1076,21 @@ export class TokenUsageStats extends Service {
   }
 
   /**
-   * One price key for a model at the given time: the peak/off-peak tier when
-   * the model is tiered, else the flat top-level key.
-   * @param model - provider model id.
-   * @param time - the usage record's time (Unix ms) used to pick the tier.
-   * @param key - the price key to read.
-   */
-  /**
-   * Resolve pricing for a provider model id, including historical and
-   * vendor-specific aliases of the two published models.
+   * Resolve pricing for a provider-reported model id.
    *
-   * `deepseek-flash` is DeepSeek-V4.1-Flash and `deepseek-v4-pro` is
-   * DeepSeek-V4-Pro-0813. Providers report either the price-book key or an
-   * upstream id (`deepseek-v4.1-flash`, `deepseek-v4.1-flash-sg`, …), so both
-   * spellings must reach the same price.
+   * Precedence: the user's own configuration first — both the verbatim id and
+   * the built-in key it resolves to, so a configured `deepseek-flash` also
+   * covers a provider that reports `deepseek-v4.1-flash` — then the built-in
+   * price book. An id in neither stays unpriced rather than being charged at
+   * another model's rate.
+   * @param model - provider-reported model id.
    */
   private _resolvePricing(model: string): ModelPricing | undefined {
     const direct = this.config.pricing[model]
     if (direct !== undefined) return direct
-    const key = PRICING_ALIASES[model.toLowerCase()]
-    return key === undefined ? undefined : this.config.pricing[key]
+    const key = resolveBuiltinPricingKey(model)
+    if (key === undefined) return undefined
+    return this.config.pricing[key] ?? BUILTIN_PRICING[key]
   }
 
   /**
